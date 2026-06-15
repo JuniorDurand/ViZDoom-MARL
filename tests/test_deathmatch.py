@@ -6,6 +6,7 @@ Run: PYTHONPATH=. python tests/test_deathmatch.py
 import sys
 import time
 from pathlib import Path
+import threading
 
 import numpy as np
 
@@ -73,6 +74,119 @@ def test_single_mode():
 
     env.close()
 
+def test_network_mode(players=3):
+    """Test multiplayer FFA deathmatch with multiprocessing."""
+    import multiprocessing as mp
+    from src.envs.deathmatch import BUTTONS, GAME_VARS
+
+    print("=" * 50)
+    print(f"Test: Multiplayer mode ({players} players)")
+    print("=" * 50)
+
+    def worker(rank, n_players, port, result_queue, ready_event):
+        from src.envs.deathmatch import DeathmatchEnv, EnvConfig
+        import numpy as np
+
+        env = None
+        try:
+            config = EnvConfig(
+                scenario="cig",
+                mode="networked",
+                episode_minutes=0.5,
+                rank=rank,
+                n_players=n_players,
+                port=port,
+            )
+            env = DeathmatchEnv(config)
+            obs = env.initial_obs()
+            ready_event.set()
+
+            total_reward = 0.0
+            steps = 0
+            done = False
+
+            while not done:
+                action = np.random.randint(0, env.n_actions)
+                obs, reward, done, info = env.step(action)
+                total_reward += reward
+                steps += 1
+
+            result_queue.put({
+                "rank": rank,
+                "steps": steps,
+                "reward": total_reward,
+                "frags": info["frags"],
+                "deaths": info["deaths"],
+                "obs_shape": obs.shape,
+            })
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            ready_event.set()
+            result_queue.put({"rank": rank, "error": str(e)})
+
+        finally:
+            if env is not None:
+                env.close()
+
+    port = 5090
+    ctx = mp.get_context("fork")
+    result_queue = ctx.Queue()
+    ready_events = [ctx.Event() for _ in range(players)]
+    procs = []
+
+    for rank in range(players):
+        p = ctx.Process(
+            target=worker,
+            args=(rank, players, port, result_queue, ready_events[rank]),
+        )
+        procs.append(p)
+
+    procs[0].start()
+    time.sleep(6)
+    for p in procs[1:]:
+        p.start()
+        time.sleep(0.5)
+
+    all_ready = True
+    for rank, rev in enumerate(ready_events):
+        if not rev.wait(timeout=120):
+            print(f"  Agent {rank}: timeout on init")
+            all_ready = False
+
+    if all_ready:
+        print(f"  All {players} agents connected")
+
+    for p in procs:
+        p.join(timeout=180)
+
+    results = []
+    while not result_queue.empty():
+        results.append(result_queue.get())
+
+    for r in sorted(results, key=lambda x: x["rank"]):
+        if "error" in r:
+            print(f"  Agent {r['rank']}: ERROR - {r['error']}")
+        else:
+            kd = r["frags"] / max(r["deaths"], 1)
+            print(f"  Agent {r['rank']}: "
+                  f"steps={r['steps']}, "
+                  f"reward={r['reward']:.2f}, "
+                  f"frags={r['frags']:.0f}, "
+                  f"deaths={r['deaths']:.0f}, "
+                  f"K/D={kd:.2f}, "
+                  f"obs={r['obs_shape']}")
+
+    for p in procs:
+        if p.is_alive():
+            p.kill()
+            p.join(timeout=5)
+
+    assert len(results) == players, f"Expected {players}, got {len(results)}"
+    assert all("error" not in r for r in results)
+    assert all(r["obs_shape"] == (12, 84, 84) for r in results)
+    print("PASSED\n")
 
 def test_reward_components():
     """Verify reward is non-trivial."""
@@ -197,6 +311,8 @@ def test_obs_consistency():
     env.close()
 
 
+
+
 if __name__ == "__main__":
     test_cig_scenario()
     test_single_mode()
@@ -204,6 +320,7 @@ if __name__ == "__main__":
     test_recording()
     test_respawn()
     test_obs_consistency()
+    test_network_mode()
     print("=" * 50)
     print("All tests passed!")
     print("=" * 50)
