@@ -1,0 +1,7 @@
+_vizdoom.ini
+__pycache__/
+logs/
+logs-*/
+*.pth
+wandb/
+.env
