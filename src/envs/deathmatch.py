@@ -40,6 +40,7 @@ BUTTONS = [
     vzd.Button.MOVE_LEFT,
     vzd.Button.MOVE_RIGHT,
     vzd.Button.SELECT_NEXT_WEAPON,
+    # vzd.Button.RELOAD
 ]
 
 ACTIONS = [
@@ -61,10 +62,10 @@ ACTIONS = [
     [1, 0, 0, 0, 0, 0, 0, 1, 0],  # attack + strafe right
     [1, 0, 0, 0, 1, 0, 0, 0, 0],  # attack + turn left
     [1, 0, 0, 0, 0, 1, 0, 0, 0],  # attack + turn right
-    [0, 0, 0, 0, 0, 0, 0, 0, 1],  # next weapon
+    # [0, 0, 0, 0, 0, 0, 0, 0, 1],  # next weapon
 ]
 
-# Game variables tracked for reward shaping
+# Game variables tracked for reward shaping and metrics
 GAME_VARS = [
     vzd.GameVariable.FRAGCOUNT,
     vzd.GameVariable.HEALTH,
@@ -90,6 +91,7 @@ class RewardConfig:
     ammo:         float =  0.005
     death:        float =  0.5
     living:       float =  0.0005
+    miss:         float =  0.00
     clip_min:     float = -3.0
     clip_max:     float =  5.0
 
@@ -97,7 +99,7 @@ class RewardConfig:
 @dataclass
 class EnvConfig:
     """Environment configuration."""
-    scenario:        str   = "cig"
+    scenario:        str   = "cig"          # "cig" or "deathmatch"
     mode:            str   = "single"       # "single" or "networked"
     rank:            int   = 0
     n_players:       int   = 1
@@ -144,6 +146,11 @@ class DeathmatchEnv:
         self.frames = deque(maxlen=config.frame_stack)
         self.recorded_frames = []
         self._prev_vars = {v: 0.0 for v in GAME_VARS}
+
+        # episode-level metrics tracking
+        self._episode_steps = 0
+        self._steps_since_death = 0
+        self._attack_steps = 0
 
         self.game = self._create_game()
         if auto_init:
@@ -214,13 +221,11 @@ class DeathmatchEnv:
 
         frame = np.asarray(frame)
 
-        # vizdoom returns (3, H, W) or (H, W, 3) depending on version
         if frame.ndim == 3 and frame.shape[0] == 3:
             frame = np.transpose(frame, (1, 2, 0))
 
         frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_AREA)
 
-        # (H, W, 3) → (3, H, W)
         return np.transpose(frame, (2, 0, 1)).astype(np.uint8)
 
     def _stacked_obs(self) -> np.ndarray:
@@ -238,7 +243,7 @@ class DeathmatchEnv:
     def _snapshot_vars(self) -> dict:
         return {v: self._get_var(v) for v in GAME_VARS}
 
-    def _compute_reward(self, cur: dict, dead: bool) -> float:
+    def _compute_reward(self, cur: dict, dead: bool, action_idx: int) -> float:
         prev = self._prev_vars
         rc = self.cfg.reward
 
@@ -262,7 +267,51 @@ class DeathmatchEnv:
         if dead:
             reward -= rc.death
 
+        # penalty for shooting and missing
+        is_attack = self.actions[action_idx][0] == 1  # ATTACK is the first button
+        if is_attack and d_hit == 0:
+            reward -= rc.miss
+
         return float(np.clip(reward, rc.clip_min, rc.clip_max))
+
+    # -- metrics --------------------------------------------------------------
+
+    def _build_info(self, cur: dict, action_idx: int) -> dict:
+        """Build info dict with raw and derived metrics."""
+        frags = cur[vzd.GameVariable.FRAGCOUNT]
+        deaths = cur[vzd.GameVariable.DEATHCOUNT]
+        damage_dealt = cur[vzd.GameVariable.DAMAGECOUNT]
+        damage_taken = cur[vzd.GameVariable.DAMAGE_TAKEN]
+        hits = cur[vzd.GameVariable.HITCOUNT]
+        items = cur[vzd.GameVariable.ITEMCOUNT]
+
+        # track attack actions for accuracy approximation
+        is_attack = self.actions[action_idx][0] == 1
+        if is_attack:
+            self._attack_steps += 1
+
+        return {
+            # raw game stats
+            "frags":        frags,
+            "deaths":       deaths,
+            "damage_dealt": damage_dealt,
+            "damage_taken": damage_taken,
+            "hits":         hits,
+            "items":        items,
+            "health":       cur[vzd.GameVariable.HEALTH],
+            "armor":        cur[vzd.GameVariable.ARMOR],
+            "ammo":         cur[vzd.GameVariable.SELECTED_WEAPON_AMMO],
+
+            # derived performance metrics
+            "kd_ratio":       frags / max(deaths, 1),
+            "damage_ratio":   damage_dealt / max(damage_taken, 1),
+            "hit_rate":       hits / max(self._attack_steps, 1),
+
+            # episode tracking
+            "episode_steps":      self._episode_steps,
+            "survival_steps":     self._steps_since_death,
+            "attack_steps":       self._attack_steps,
+        }
 
     # -- recording ------------------------------------------------------------
 
@@ -296,6 +345,9 @@ class DeathmatchEnv:
         """Start a new episode. Returns stacked RGB observation (uint8)."""
         self.game.new_episode()
         self._prev_vars = self._snapshot_vars()
+        self._episode_steps = 0
+        self._steps_since_death = 0
+        self._attack_steps = 0
 
         frame = self._preprocess(self._get_screen())
         self.frames.clear()
@@ -317,13 +369,18 @@ class DeathmatchEnv:
         dead = self.game.is_player_dead()
 
         cur = self._snapshot_vars()
-        reward = self._compute_reward(cur, dead)
+        reward = self._compute_reward(cur, dead, action_idx)  # passa action_idx
         self._prev_vars = cur
+
+        # update step counters
+        self._episode_steps += 1
+        self._steps_since_death += 1
 
         # respawn on death (episode continues until timeout)
         if dead and not done:
             self.game.respawn_player()
             self._prev_vars = self._snapshot_vars()
+            self._steps_since_death = 0
 
         if done:
             frame = np.zeros((3, *self.cfg.obs_resolution), dtype=np.uint8)
@@ -333,30 +390,27 @@ class DeathmatchEnv:
 
         self.frames.append(frame)
 
-        info = {
-            "frags":  cur[vzd.GameVariable.FRAGCOUNT],
-            "deaths": cur[vzd.GameVariable.DEATHCOUNT],
-            "damage": cur[vzd.GameVariable.DAMAGECOUNT],
-            "hits":   cur[vzd.GameVariable.HITCOUNT],
-            "health": cur[vzd.GameVariable.HEALTH],
-            "armor":  cur[vzd.GameVariable.ARMOR],
-        }
+        info = self._build_info(cur, action_idx)
 
         return self._stacked_obs(), reward, done, info
-    
+
     def initial_obs(self) -> np.ndarray:
         """
         Get initial observation after game.init() without calling new_episode().
         In networked mode, init() already starts the first episode.
         """
         self._prev_vars = self._snapshot_vars()
+        self._episode_steps = 0
+        self._steps_since_death = 0
+        self._attack_steps = 0
+
         frame = self._preprocess(self._get_screen())
         self.frames.clear()
         for _ in range(self.cfg.frame_stack):
             self.frames.append(frame)
         self._grab_frame()
         return self._stacked_obs()
-    
+
     @property
     def obs_shape(self) -> tuple:
         """Shape of a single observation: (in_channels, H, W)."""
