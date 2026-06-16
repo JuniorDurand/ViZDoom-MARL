@@ -68,6 +68,7 @@ ACTIONS = [
 # Game variables tracked for reward shaping and metrics
 GAME_VARS = [
     vzd.GameVariable.FRAGCOUNT,
+    vzd.GameVariable.KILLCOUNT, 
     vzd.GameVariable.HEALTH,
     vzd.GameVariable.ARMOR,
     vzd.GameVariable.DAMAGECOUNT,
@@ -247,7 +248,8 @@ class DeathmatchEnv:
         prev = self._prev_vars
         rc = self.cfg.reward
 
-        d_frag   = cur[vzd.GameVariable.FRAGCOUNT]            - prev[vzd.GameVariable.FRAGCOUNT]
+        d_frag = (cur[vzd.GameVariable.FRAGCOUNT] - prev[vzd.GameVariable.FRAGCOUNT]) + \
+                 (cur[vzd.GameVariable.KILLCOUNT] - prev[vzd.GameVariable.KILLCOUNT])
         d_damage = cur[vzd.GameVariable.DAMAGECOUNT]           - prev[vzd.GameVariable.DAMAGECOUNT]
         d_taken  = cur[vzd.GameVariable.DAMAGE_TAKEN]          - prev[vzd.GameVariable.DAMAGE_TAKEN]
         d_hit    = cur[vzd.GameVariable.HITCOUNT]              - prev[vzd.GameVariable.HITCOUNT]
