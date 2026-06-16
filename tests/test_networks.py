@@ -5,6 +5,7 @@ Run: PYTHONPATH=. python tests/test_networks.py
 
 import sys
 from pathlib import Path
+import numpy as np
 
 import torch
 
@@ -143,6 +144,133 @@ def test_env_compatibility():
 
     env.close()
 
+def test_agent_ppo():
+    """Test Agent in PPO/IPPO mode (local critic)."""
+    from src.networks.actor_critic import RecurrentActorCritic
+    from src.networks.agent import Agent
+
+    print("=" * 50)
+    print("Test: Agent (PPO/IPPO mode)")
+    print("=" * 50)
+
+    ac = RecurrentActorCritic(in_channels=12, n_actions=19)
+    agent = Agent(ac)
+
+    assert not agent.is_mappo
+    print(f"  is_mappo: {agent.is_mappo}")
+    print(f"  params: {sum(p.numel() for p in agent.parameters()):,}")
+
+    # act
+    obs = np.random.randint(0, 255, (12, 84, 84), dtype=np.uint8)
+    h = agent.init_hidden(1)
+    action, logprob, value, h, ch = agent.act(obs, h)
+    print(f"  act: action={action}, logprob={logprob:.3f}, value={value:.3f}")
+
+    assert isinstance(action, int)
+    assert 0 <= action < 19
+
+    # get_value
+    v = agent.get_value(obs, h)
+    print(f"  get_value: {v:.3f}")
+
+    # evaluate_actions
+    agent.train()
+    obs_seq = torch.randint(0, 255, (4, 10, 12, 84, 84), dtype=torch.uint8)
+    actions_seq = torch.randint(0, 19, (4, 10))
+    h_init = agent.init_hidden(4)
+    dones = torch.zeros(4, 10)
+
+    logprobs, values, entropy = agent.evaluate_actions(
+        obs_seq, actions_seq, h_init, dones)
+
+    print(f"  evaluate: logprobs={logprobs.shape}, values={values.shape}, entropy={entropy:.3f}")
+    assert logprobs.shape == (4, 10)
+    assert values.shape == (4, 10)
+
+    # save/load
+    agent.save("/tmp/test_agent_ppo.pt")
+    agent2 = Agent(RecurrentActorCritic(in_channels=12, n_actions=19))
+    agent2.load("/tmp/test_agent_ppo.pt")
+    print("  save/load: OK")
+
+    print("PASSED\n")
+
+
+def test_agent_mappo():
+    """Test Agent in MAPPO mode (centralized critic)."""
+    from src.networks.actor_critic import RecurrentActorCritic
+    from src.networks.centralized_critic import CentralizedCritic
+    from src.networks.agent import Agent
+
+    print("=" * 50)
+    print("Test: Agent (MAPPO mode)")
+    print("=" * 50)
+
+    n_agents = 4
+    in_channels = 12
+
+    ac = RecurrentActorCritic(in_channels=in_channels, n_actions=19)
+    cc = CentralizedCritic(n_agents=n_agents, in_channels=in_channels)
+    agent = Agent(ac, centralized_critic=cc)
+
+    assert agent.is_mappo
+    print(f"  is_mappo: {agent.is_mappo}")
+    print(f"  actor params: {sum(p.numel() for p in ac.parameters()):,}")
+    print(f"  critic params: {sum(p.numel() for p in cc.parameters()):,}")
+    print(f"  total params: {sum(p.numel() for p in agent.parameters()):,}")
+
+    # act with global obs
+    obs = np.random.randint(0, 255, (in_channels, 84, 84), dtype=np.uint8)
+    global_obs = np.random.randint(0, 255, (n_agents * in_channels, 84, 84), dtype=np.uint8)
+    ah = agent.init_hidden(1)
+    ch = agent.init_critic_hidden(1)
+
+    action, logprob, value, ah, ch = agent.act(obs, ah, ch, global_obs)
+    print(f"  act: action={action}, logprob={logprob:.3f}, value={value:.3f}")
+
+    # get_value centralized
+    v = agent.get_value(obs, ah, ch, global_obs)
+    print(f"  get_value (centralized): {v:.3f}")
+
+    # evaluate_actions with global obs
+    agent.train()
+    B, T = 4, 10
+    obs_seq = torch.randint(0, 255, (B, T, in_channels, 84, 84), dtype=torch.uint8)
+    global_seq = torch.randint(0, 255, (B, T, n_agents * in_channels, 84, 84), dtype=torch.uint8)
+    actions_seq = torch.randint(0, 19, (B, T))
+    ah_init = agent.init_hidden(B)
+    ch_init = agent.init_critic_hidden(B)
+    dones = torch.zeros(B, T)
+
+    logprobs, values, entropy = agent.evaluate_actions(
+        obs_seq, actions_seq, ah_init, dones, ch_init, global_seq)
+
+    print(f"  evaluate: logprobs={logprobs.shape}, values={values.shape}, entropy={entropy:.3f}")
+    assert logprobs.shape == (B, T)
+    assert values.shape == (B, T)
+
+    # save/load
+    agent.save("/tmp/test_agent_mappo.pt")
+    agent2 = Agent(
+        RecurrentActorCritic(in_channels=in_channels, n_actions=19),
+        CentralizedCritic(n_agents=n_agents, in_channels=in_channels),
+    )
+    agent2.load("/tmp/test_agent_mappo.pt")
+    print("  save/load: OK")
+
+    # transfer: load only actor from PPO pretrained
+    ppo_agent = Agent(RecurrentActorCritic(in_channels=in_channels, n_actions=19))
+    ppo_agent.save("/tmp/test_ppo_pretrained.pt")
+
+    mappo_agent = Agent(
+        RecurrentActorCritic(in_channels=in_channels, n_actions=19),
+        CentralizedCritic(n_agents=n_agents, in_channels=in_channels),
+    )
+    mappo_agent.load_pretrained_actor("/tmp/test_ppo_pretrained.pt")
+    print("  transfer (PPO → MAPPO actor): OK")
+
+    print("PASSED\n")
+
 
 if __name__ == "__main__":
     test_dqn()
@@ -150,6 +278,8 @@ if __name__ == "__main__":
     test_actor_critic()
     test_shared_encoder()
     test_env_compatibility()
+    test_agent_mappo()
+    test_agent_ppo()
     print("=" * 50)
     print("All network tests passed!")
     print("=" * 50)
