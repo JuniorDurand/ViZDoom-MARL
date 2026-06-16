@@ -5,3 +5,5 @@ logs-*/
 *.pth
 wandb/
 .env
+results/
+*.log
