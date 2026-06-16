@@ -97,7 +97,7 @@ class RewardConfig:
 @dataclass
 class EnvConfig:
     """Environment configuration."""
-    scenario:        str   = "deathmatch"
+    scenario:        str   = "cig"
     mode:            str   = "single"       # "single" or "networked"
     rank:            int   = 0
     n_players:       int   = 1
@@ -126,10 +126,14 @@ class DeathmatchEnv:
     via sockets (rank 0 = host, others = clients). In single mode, each
     instance runs independently against built-in monsters.
 
+    IMPORTANT: networked mode requires multiprocessing (one process per agent).
+    ViZDoom is not thread-safe with multiple game instances. The trainer must
+    spawn each agent in a separate process.
+
     Observations are RGB, shape (frame_stack * 3, H, W), dtype uint8.
     """
 
-    def __init__(self, config: Optional[EnvConfig] = None, **kwargs):
+    def __init__(self, config: Optional[EnvConfig] = None, auto_init: bool = True, **kwargs):
         if config is None:
             config = EnvConfig(**kwargs)
         self.cfg = config
@@ -142,7 +146,8 @@ class DeathmatchEnv:
         self._prev_vars = {v: 0.0 for v in GAME_VARS}
 
         self.game = self._create_game()
-        self.game.init()
+        if auto_init:
+            self.game.init()
 
     def _create_game(self) -> vzd.DoomGame:
         cfg = self.cfg
@@ -163,14 +168,13 @@ class DeathmatchEnv:
         game.set_console_enabled(False)
         game.set_doom_skill(cfg.doom_skill)
 
-        # resolução alta só quando gravando, senão mínima
         if cfg.record:
             game.set_screen_resolution(cfg.screen_resolution)
         else:
             game.set_screen_resolution(vzd.ScreenResolution.RES_160X120)
 
         if cfg.mode == "networked" and cfg.n_players > 1:
-            game.set_mode(vzd.Mode.ASYNC_PLAYER)
+            game.set_mode(vzd.Mode.PLAYER)
 
             if cfg.rank == 0:
                 game.add_game_args(
@@ -339,6 +343,25 @@ class DeathmatchEnv:
         }
 
         return self._stacked_obs(), reward, done, info
+    
+    def initial_obs(self) -> np.ndarray:
+        """
+        Get initial observation after game.init() without calling new_episode().
+        In networked mode, init() already starts the first episode.
+        """
+        self._prev_vars = self._snapshot_vars()
+        frame = self._preprocess(self._get_screen())
+        self.frames.clear()
+        for _ in range(self.cfg.frame_stack):
+            self.frames.append(frame)
+        self._grab_frame()
+        return self._stacked_obs()
+    
+    @property
+    def obs_shape(self) -> tuple:
+        """Shape of a single observation: (in_channels, H, W)."""
+        h, w = self.cfg.obs_resolution
+        return (self.in_channels, h, w)
 
     def close(self):
         try:
