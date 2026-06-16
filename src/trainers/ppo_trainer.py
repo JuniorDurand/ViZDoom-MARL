@@ -498,20 +498,22 @@ class PPOTrainer:
             # episode metrics
             if self._episode_infos:
                 recent = self._episode_infos[-10:]
-                stats["game/ep_reward_mean"]  = np.mean(self._episode_rewards[-10:])
-                stats["game/frags_mean"]      = np.mean([i["frags"] for i in recent])
-                stats["game/deaths_mean"]     = np.mean([i["deaths"] for i in recent])
-                stats["game/damage_dealt"]    = np.mean([i["damage_dealt"] for i in recent])
-                stats["game/damage_taken"]    = np.mean([i["damage_taken"] for i in recent])
-                stats["game/damage_ratio"]    = np.mean([i["damage_ratio"] for i in recent])
-                stats["game/hits"]            = np.mean([i["hits"] for i in recent])
-                stats["game/hit_rate"]        = np.mean([i["hit_rate"] for i in recent])
-                stats["game/items"]           = np.mean([i["items"] for i in recent])
-                stats["game/episode_steps"]   = np.mean([i["episode_steps"] for i in recent])
-                stats["game/survival_steps"]  = np.mean([i["survival_steps"] for i in recent])
-                total_frags = sum(i["frags"] for i in recent)
+                stats["game/ep_reward_mean"]   = np.mean(self._episode_rewards[-10:])
+                stats["game/frags_mean"]       = np.mean([i["frags"] for i in recent])
+                stats["game/kills_mean"]       = np.mean([i["kills"] for i in recent])
+                stats["game/total_kills_mean"] = np.mean([i["total_kills"] for i in recent])
+                stats["game/deaths_mean"]      = np.mean([i["deaths"] for i in recent])
+                stats["game/damage_dealt"]     = np.mean([i["damage_dealt"] for i in recent])
+                stats["game/damage_taken"]     = np.mean([i["damage_taken"] for i in recent])
+                stats["game/damage_ratio"]     = np.mean([i["damage_ratio"] for i in recent])
+                stats["game/hits"]             = np.mean([i["hits"] for i in recent])
+                stats["game/hit_rate"]         = np.mean([i["hit_rate"] for i in recent])
+                stats["game/items"]            = np.mean([i["items"] for i in recent])
+                stats["game/episode_steps"]    = np.mean([i["episode_steps"] for i in recent])
+                stats["game/survival_steps"]   = np.mean([i["survival_steps"] for i in recent])
+                total_kills = sum(i["total_kills"] for i in recent)
                 total_deaths = sum(i["deaths"] for i in recent)
-                stats["game/kd_ratio"] = total_frags / max(total_deaths, 1)
+                stats["game/kd_ratio"] = total_kills / max(total_deaths, 1)
 
             # system
             elapsed = time.time() - t_start
@@ -540,7 +542,7 @@ class PPOTrainer:
                 if "game/ep_reward_mean" in stats:
                     parts.append(f"rew={stats['game/ep_reward_mean']:.2f}")
                 if "game/frags_mean" in stats:
-                    parts.append(f"frags={stats['game/frags_mean']:.1f}")
+                    parts.append(f"kills={stats['game/total_kills_mean']:.1f}")
                 if "game/kd_ratio" in stats:
                     parts.append(f"K/D={stats['game/kd_ratio']:.2f}")
                 if "game/hit_rate" in stats:
