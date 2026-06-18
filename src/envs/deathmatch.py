@@ -296,22 +296,27 @@ class DeathmatchEnv:
 
         return {
             # raw game stats
-            "frags":        frags,          # player kills (multiplayer)
-            "kills":        kills,          # monster kills (single)
+            "frags":        frags,          # player kills (negative with sv_losefrag)
+            "kills":        kills,          # monster kills
             "total_kills":  total_kills,    # both combined
             "deaths":       deaths,
             "damage_dealt": damage_dealt,
             "damage_taken": damage_taken,
             "hits":         hits,
             "items":        items,
+            "damage_dealt": cur[vzd.GameVariable.DAMAGECOUNT],
+            "damage_taken": cur[vzd.GameVariable.DAMAGE_TAKEN],
+            "hits":         cur[vzd.GameVariable.HITCOUNT],
+            "items":        cur[vzd.GameVariable.ITEMCOUNT],
             "health":       cur[vzd.GameVariable.HEALTH],
             "armor":        cur[vzd.GameVariable.ARMOR],
             "ammo":         cur[vzd.GameVariable.SELECTED_WEAPON_AMMO],
 
-            # derived performance metrics
+            # derived
             "kd_ratio":       total_kills / max(deaths, 1),
-            "damage_ratio":   damage_dealt / max(damage_taken, 1),
-            "hit_rate":       hits / max(self._attack_steps, 1),
+            "net_frags":      frags,
+            "damage_ratio":   cur[vzd.GameVariable.DAMAGECOUNT] / max(cur[vzd.GameVariable.DAMAGE_TAKEN], 1),
+            "hit_rate":       cur[vzd.GameVariable.HITCOUNT] / max(self._attack_steps, 1),
 
             # episode tracking
             "episode_steps":      self._episode_steps,
